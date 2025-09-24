@@ -7,7 +7,8 @@ import { Textarea } from '@/components/ui/textarea.jsx'
 import { Badge } from '@/components/ui/badge.jsx'
 import { Switch } from '@/components/ui/switch.jsx'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs.jsx'
-import { Upload, Send, Key, Image as ImageIcon, MessageCircle, Mic, MicOff, Volume2, VolumeX, Video, VideoOff, Camera, Square } from 'lucide-react'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select.jsx'
+import { Upload, Send, Key, Image as ImageIcon, MessageCircle, Volume2, VolumeX, Video, VideoOff, Camera, Square } from 'lucide-react'
 import './App.css'
 
 function App() {
@@ -21,9 +22,7 @@ function App() {
   
   // Voice-related states
   const [isVoiceMode, setIsVoiceMode] = useState(false)
-  const [isRecording, setIsRecording] = useState(false)
   const [isSpeaking, setIsSpeaking] = useState(false)
-  const [speechSupported, setSpeechSupported] = useState(false)
   
   // Video-related states
   const [isVideoMode, setIsVideoMode] = useState(false)
@@ -31,39 +30,24 @@ function App() {
   const [isVideoActive, setIsVideoActive] = useState(false)
   const [capturedFrames, setCapturedFrames] = useState([])
   const [currentVideoSource, setCurrentVideoSource] = useState('image') // 'image' or 'video'
+  const [selectedPrompt, setSelectedPrompt] = useState('')
   
   const fileInputRef = useRef(null)
-  const mediaRecorderRef = useRef(null)
-  const speechRecognitionRef = useRef(null)
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
 
-  // Check for speech recognition support
-  useEffect(() => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
-    if (SpeechRecognition) {
-      setSpeechSupported(true)
-      speechRecognitionRef.current = new SpeechRecognition()
-      speechRecognitionRef.current.continuous = false
-      speechRecognitionRef.current.interimResults = false
-      speechRecognitionRef.current.lang = 'en-US'
-      
-      speechRecognitionRef.current.onresult = (event) => {
-        const transcript = event.results[0][0].transcript
-        setCurrentMessage(transcript)
-        setIsRecording(false)
-      }
-      
-      speechRecognitionRef.current.onerror = (event) => {
-        console.error('Speech recognition error:', event.error)
-        setIsRecording(false)
-      }
-      
-      speechRecognitionRef.current.onend = () => {
-        setIsRecording(false)
-      }
-    }
-  }, [])
+  // Predefined prompts for visual conversation
+  const predefinedPrompts = [
+    { value: "describe", label: "What do you see in this image/video?" },
+    { value: "detailed", label: "Describe the scene in detail" },
+    { value: "actions", label: "What actions are taking place?" },
+    { value: "identify", label: "Identify objects and people in the scene" },
+    { value: "mood", label: "What's the mood or atmosphere?" },
+    { value: "stepbystep", label: "Explain what's happening step by step" },
+    { value: "colors", label: "Describe the colors and lighting" },
+    { value: "setting", label: "What kind of setting or location is this?" }
+  ]
+
 
   // Cleanup video stream on unmount
   useEffect(() => {
@@ -190,23 +174,10 @@ function App() {
     }
   }
 
-  const startRecording = () => {
-    if (speechRecognitionRef.current && !isRecording) {
-      setIsRecording(true)
-      speechRecognitionRef.current.start()
-    }
-  }
-
-  const stopRecording = () => {
-    if (speechRecognitionRef.current && isRecording) {
-      speechRecognitionRef.current.stop()
-      setIsRecording(false)
-    }
-  }
 
   const handleSendMessage = async () => {
     if (!currentMessage.trim() || !isApiKeySet) return
-    
+
     // Check if we have either an uploaded image or active video
     if (!uploadedImage && !isVideoActive) {
       alert('Please upload an image or start video mode first.')
@@ -215,6 +186,7 @@ function App() {
 
     const userMessage = currentMessage.trim()
     setCurrentMessage('')
+    setSelectedPrompt('') // Reset selected prompt
     setIsLoading(true)
 
     // Add user message to chat
@@ -226,35 +198,53 @@ function App() {
       const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' })
 
       let prompt = []
-      
+      let hasValidMediaData = false
+
       if (currentVideoSource === 'video' && isVideoActive) {
         // Capture current frame for video mode
         const currentFrame = captureFrame()
-        if (currentFrame) {
+        if (currentFrame && currentFrame.base64) {
           prompt.push({
             inlineData: {
               mimeType: 'image/jpeg',
               data: currentFrame.base64
             }
           })
-          
+          hasValidMediaData = true
+
           // Add context from recent frames if available
           if (capturedFrames.length > 1) {
             const contextText = `This is a live video feed. I'm showing you the current frame captured at ${currentFrame.timestamp}. Previous frames were captured at: ${capturedFrames.slice(-3, -1).map(f => f.timestamp).join(', ')}.`
             prompt.push({ text: contextText })
           }
+        } else {
+          throw new Error('Failed to capture video frame. Please try again.')
         }
       } else if (uploadedImage) {
-        // Use uploaded image
-        const imageBase64 = await convertImageToBase64(uploadedImage)
-        prompt.push({
-          inlineData: {
-            mimeType: uploadedImage.type,
-            data: imageBase64
+        try {
+          // Use uploaded image
+          const imageBase64 = await convertImageToBase64(uploadedImage)
+          if (imageBase64) {
+            prompt.push({
+              inlineData: {
+                mimeType: uploadedImage.type,
+                data: imageBase64
+              }
+            })
+            hasValidMediaData = true
+          } else {
+            throw new Error('Failed to process uploaded image. Please try uploading again.')
           }
-        })
+        } catch (conversionError) {
+          throw new Error('Failed to process uploaded image. Please try uploading again.')
+        }
       }
-      
+
+      // Validate that we have media data before proceeding
+      if (!hasValidMediaData) {
+        throw new Error('No valid image or video data available. Please upload an image or start video mode.')
+      }
+
       // Add user question
       prompt.push({ text: userMessage })
 
@@ -265,19 +255,29 @@ function App() {
 
       // Add AI response to chat
       setMessages(prev => [...prev, { role: 'assistant', content: text }])
-      
+
       // Speak the response if voice mode is enabled
       if (isVoiceMode) {
         speakText(text)
       }
     } catch (error) {
       console.error('Error generating response:', error)
-      const errorMessage = 'Sorry, I encountered an error while processing your request. Please check your API key and try again.'
-      setMessages(prev => [...prev, { 
-        role: 'assistant', 
+      let errorMessage = 'Sorry, I encountered an error while processing your request.'
+
+      // Provide more specific error messages
+      if (error.message.includes('empty inlineData')) {
+        errorMessage = 'No image or video data was provided. Please upload an image or start video streaming first.'
+      } else if (error.message.includes('Failed to capture') || error.message.includes('Failed to process')) {
+        errorMessage = error.message
+      } else if (error.message.includes('API key')) {
+        errorMessage = 'Please check your API key and try again.'
+      }
+
+      setMessages(prev => [...prev, {
+        role: 'assistant',
         content: errorMessage
       }])
-      
+
       if (isVoiceMode) {
         speakText(errorMessage)
       }
@@ -293,15 +293,19 @@ function App() {
     }
   }
 
+  const handlePromptSelect = (promptValue) => {
+    const selectedPromptObj = predefinedPrompts.find(p => p.value === promptValue)
+    if (selectedPromptObj) {
+      setCurrentMessage(selectedPromptObj.label)
+      setSelectedPrompt(promptValue)
+    }
+  }
+
   const getPlaceholderText = () => {
     if (currentVideoSource === 'video' && isVideoActive) {
-      return isVoiceMode 
-        ? "Ask something about the live video or use voice..." 
-        : "Ask something about the live video..."
+      return "Ask something about the live video..."
     } else if (uploadedImage) {
-      return isVoiceMode 
-        ? "Ask something about the image or use voice..." 
-        : "Ask something about the image..."
+      return "Ask something about the image..."
     } else {
       return "Upload an image or start video mode first"
     }
@@ -364,17 +368,13 @@ function App() {
                     <div>
                       <p className="font-medium">Voice Mode</p>
                       <p className="text-sm text-gray-500">
-                        {speechSupported 
-                          ? "Enable voice input and audio responses" 
-                          : "Speech recognition not supported in this browser"
-                        }
+                        Enable audio responses from AI
                       </p>
                     </div>
                   </div>
                   <Switch
                     checked={isVoiceMode}
                     onCheckedChange={setIsVoiceMode}
-                    disabled={!speechSupported}
                   />
                 </div>
               </CardContent>
@@ -545,28 +545,41 @@ function App() {
                       )}
                     </div>
 
+                    {/* Predefined Prompts Selector */}
+                    {(uploadedImage || isVideoActive) && (
+                      <div className="mb-3">
+                        <Select value={selectedPrompt} onValueChange={handlePromptSelect}>
+                          <SelectTrigger className="w-full">
+                            <SelectValue placeholder="Choose a quick prompt or type your own..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {predefinedPrompts.map((prompt) => (
+                              <SelectItem key={prompt.value} value={prompt.value}>
+                                {prompt.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+
                     {/* Message Input */}
                     <div className="flex gap-2">
                       <Textarea
                         placeholder={getPlaceholderText()}
                         value={currentMessage}
-                        onChange={(e) => setCurrentMessage(e.target.value)}
+                        onChange={(e) => {
+                          setCurrentMessage(e.target.value)
+                          // Reset selected prompt when user types custom text
+                          if (e.target.value !== predefinedPrompts.find(p => p.value === selectedPrompt)?.label) {
+                            setSelectedPrompt('')
+                          }
+                        }}
                         onKeyPress={handleKeyPress}
                         disabled={(!uploadedImage && !isVideoActive) || isLoading}
                         className="flex-1 min-h-[40px] max-h-[120px]"
                       />
                       
-                      {/* Voice Input Button */}
-                      {isVoiceMode && speechSupported && (
-                        <Button
-                          onClick={isRecording ? stopRecording : startRecording}
-                          disabled={(!uploadedImage && !isVideoActive) || isLoading}
-                          variant={isRecording ? "destructive" : "outline"}
-                          size="icon"
-                        >
-                          {isRecording ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-                        </Button>
-                      )}
                       
                       {/* Send Button */}
                       <Button
